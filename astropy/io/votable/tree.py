@@ -7,6 +7,7 @@ import re
 import gzip
 import base64
 import codecs
+import itertools
 import urllib.request
 
 # THIRD-PARTY
@@ -401,6 +402,210 @@ class _DescriptionProperty:
     @description.deleter
     def description(self):
         self._description = None
+
+
+######################################################################
+# VODML-RELATED
+class _Annotatable:
+    """mixes in attributes required for receiving data model
+    annotations.
+    """
+    _annotations = None
+
+    def get_annotations(self, type):
+        """returns all annotations known for a VODML type on this object.
+        
+        Note that the root VOTable has all annotations.
+
+        This will return a (possibly empty) sequence of Annotation
+        object
+        """
+        if self._annotations is None:
+            return []
+        return self._annotations.get(type, [])
+
+    def iter_annotations(self):
+        """iterates over type, annotation over this element's annotations.
+        """
+        return self._annotations.items()
+    
+    def add_annotation(self, ann):
+        """registers an annotation ann for a VODML type.
+        """
+        if self._annotations is None:
+            self._annotations = {}
+
+        self._annotations.setdefault(ann.type, []).append(ann)
+
+
+class Annotation:
+    """A representation of a VO-DML annotation.
+
+    Read DM attributes as attributes on these objects.  For now, everything is
+    list-valued.  If we actually have proper DMs one day, scalars will come
+    back as scalars, I guess; non-set attributes are empty lists (and
+    would probably return None or raise an AttributeError with proper
+    models).
+
+    Use add_annotation to set the attributes.  All annotations
+    come with VO-DML types.
+
+    These can have ids; these are important when referencing between
+    DM items.
+    """
+    def __init__(self, type, id=None, parent=None):
+        self.type = type
+        self.id = id
+        self.parent = parent
+        self._attributes = {}
+
+    def __getattr__(self, att_name):
+        return self._attributes.get(att_name, [])
+   
+    def add_attribute(self, att_name, item):
+        """add an annotation.
+
+        This will become a simple attribute.  Still, don't set the
+        attribute manually, as this may later do some bookkeeping.
+
+        item should be either another annotation, a string literal,
+        or an _Annotatable.
+        """
+        self._attributes[att_name] = item
+
+    def _get_resolved(self, ref, votable):
+        """returns the object ref references in votable and annotates it
+        with the current annotation.
+        """
+        dest = votable.get_element_by_id(ref.idref)
+        dest.add_annotation(self)
+        return dest
+
+    def resolve_references(self, votable):
+        """recursively satisfies _VODMLRefs and annotates the target
+        elements.
+        """
+        for name, vals in self._attributes.items():
+            new_vals = []
+            for val in vals:
+                if isinstance(val, _VODMLRef):
+                    new_vals.append(self._get_resolved(val, votable))
+
+                elif isinstance(val, Annotation):
+                    val.resolve_references(votable)
+                    new_vals.append(val)
+
+                else:
+                    new_vals.append(val)
+
+            self._attributes[name] = new_vals
+
+
+class _VODMLRef:
+    """An internal reference within the VOTable.
+
+    We use these as standins for objects to be resolved later while
+    parsing.  The user-visible VOTable shouldn't contain any
+    of these.
+    """
+    def __init__(self, idref):
+        self.idref = idref
+
+
+class _VODMLAnnotation:
+    """a container for the raw DM annotations parsed from a VOTable.
+
+    This will end up in the raw_annotations attribute of the
+    VOTable.  When all parsing is done, this classes's resolve_references
+    method will be called by the VOTable, and only then will
+    the actual annotations be added; this is because only then
+    we can resolve the ids.
+
+    This should probably change when we add write support; at this
+    point, we would also expose model information.
+    """
+    def __init__(self):
+        self._pre_annotations = []
+        self.id_map = {}
+
+    def resolve_references(self, votable):
+        """resolves id references into votable and replaces the
+        _VODMLRefs left in the tree with the actual target elements.
+
+        This also adds the annotations on the target elements.
+        """
+        for ann in self._pre_annotations:
+            ann.resolve_references(votable)
+            votable.add_annotation(ann)
+
+    def _parse_attribute(self, iterator, config, dmrole=None):
+        att_val = []
+
+        for start, tag, data, pos in iterator:
+
+            if start:
+                if tag=="INSTANCE":
+                    att_val.append(
+                        self._parse_instance(iterator, config, **data))
+                elif tag=="COLUMN" :
+                    att_val.append(_VODMLRef(data["ref"]))
+                elif tag=="CONSTANT":
+                    att_val.append(_VODMLRef(data["ref"]))
+
+            else:
+                if tag=="LITERAL":
+                    att_val.append(data)
+                elif tag=="ATTRIBUTE":
+                    assert att_val
+                    return att_val
+
+
+    def _parse_instance(self, iterator, config, ID=None, dmtype=None):
+        cur_annotation = Annotation(id=ID, type=dmtype)
+        if ID is not None:
+            self.id_map[ID] = cur_annotation
+
+        for start, tag, data, pos in iterator:
+            if start:
+                if tag=="ATTRIBUTE":
+                    cur_annotation.add_attribute(
+                        data["dmrole"], self._parse_attribute(
+                            iterator, config, **data))
+                else:
+                    assert False
+            else:
+                assert tag=="INSTANCE"
+                break
+
+        return cur_annotation
+
+
+    def _parse_templates(self, iterator, config):
+        for start, tag, data, pos in iterator:
+            if start:
+                if tag=="INSTANCE":
+                    self._pre_annotations.append(
+                        self._parse_instance(iterator, config, **data))
+
+            else:
+                assert tag=="TEMPLATES"
+                return
+                
+
+    def parse(self, iterator, config):
+        for start, tag, data, pos in iterator:
+            if start:
+                if tag=="TEMPLATES":
+                    self._parse_templates(iterator, config)
+
+                elif tag=="MODEL":
+                    pass # collect later
+
+            else:
+                if tag=="VODML":
+                    break
+
+        return self
 
 
 ######################################################################
@@ -1129,7 +1334,7 @@ class Values(Element, _IDProperty):
 
 
 class Field(SimpleElement, _IDProperty, _NameProperty, _XtypeProperty,
-            _UtypeProperty, _UcdProperty):
+            _UtypeProperty, _UcdProperty, _Annotatable):
     """
     FIELD_ element: describes the datatype of a particular column of data.
 
@@ -2128,7 +2333,7 @@ class Group(Element, _IDProperty, _NameProperty, _UtypeProperty,
 
 
 class Table(Element, _IDProperty, _NameProperty, _UcdProperty,
-            _DescriptionProperty):
+            _DescriptionProperty, _Annotatable):
     """
     TABLE_ element: optionally contains data.
 
@@ -3096,7 +3301,7 @@ class Table(Element, _IDProperty, _NameProperty, _UcdProperty,
 
 
 class Resource(Element, _IDProperty, _NameProperty, _UtypeProperty,
-               _DescriptionProperty):
+               _DescriptionProperty, _Annotatable):
     """
     RESOURCE_ element: Groups TABLE_ and RESOURCE_ elements.
 
@@ -3374,8 +3579,8 @@ class Resource(Element, _IDProperty, _NameProperty, _UtypeProperty,
             for info in resource.iter_info():
                 yield info
 
-
-class VOTableFile(Element, _IDProperty, _DescriptionProperty):
+class VOTableFile(Element, _IDProperty, _DescriptionProperty,
+        _Annotatable):
     """
     VOTABLE_ element: represents an entire file.
 
@@ -3402,6 +3607,7 @@ class VOTableFile(Element, _IDProperty, _DescriptionProperty):
         self._infos = HomogeneousList(Info)
         self._resources = HomogeneousList(Resource)
         self._groups = HomogeneousList(Group)
+        self._raw_annotations = None
 
         version = str(version)
         if version not in ("1.0", "1.1", "1.2", "1.3", "1.4"):
@@ -3511,6 +3717,9 @@ class VOTableFile(Element, _IDProperty, _DescriptionProperty):
         self.groups.append(group)
         group.parse(iterator, config)
 
+    def _add_raw_annotations(self, iterator, tag, data, config, pos):
+        self._raw_annotations = _VODMLAnnotation().parse(iterator, config)
+
     def _get_version_checks(self):
         config = {}
         config['version_1_1_or_later'] = \
@@ -3523,6 +3732,67 @@ class VOTableFile(Element, _IDProperty, _DescriptionProperty):
             util.version_compare(self.version, '1.4') >= 0
         return config
 
+    @staticmethod
+    def _iter_idable_children(element):
+        """iterates over children that could have IDs for a VOTable element.
+
+        I suspect they must already have a function for that, but who knows
+        where that is.
+        """
+        if isinstance(element, Group):
+            return iter(element.entries)
+
+        elif isinstance(element, Table):
+            return itertools.chain(element._fields, element._params,
+                element._groups, element._links, element._infos)
+
+        elif isinstance(element, Resource):
+            return itertools.chain(element._groups, element._params,
+                element._infos, element._links, element._tables,
+                element._resources)
+
+        elif isinstance(element, VOTableFile):
+            return itertools.chain(element._params,
+                element._infos, element._groups, element._resources)
+
+        return ()
+
+
+    def _make_global_id_map(self):
+        """sets a _global_id_map attribute containing a map of all ids
+        to the respective VOTable elements.
+        """
+        self._global_id_map = {}
+
+        def collect_ids(node):
+            if getattr(node, "ID", None):
+                self._global_id_map[node.ID] = node
+
+            for child in self._iter_idable_children(node):
+                collect_ids(child)
+
+        collect_ids(self)
+
+    def get_element_by_id(self, id):
+        """returns the element with VOTable ID id.
+
+        This will return a KeyError if there is no such element.
+        """
+        # build and cache an id map if necessary.  TODO: we
+        # need to suppress caching as long as we're not done
+        # parsing.
+        # it's a bit lame to have to have this when there's all the
+        # "typed" get_*_by_id things around, but for DM annotation
+        # we really want VOTable-wide ID resolution.
+        if not hasattr(self, "_global_id_map"):
+            self._make_global_id_map()
+
+        if self._raw_annotations:
+            if id in self._raw_annotations.id_map:
+                return self._raw_annotations.id_map[id]
+
+        return self._global_id_map[id]
+         
     def parse(self, iterator, config):
         config['_current_table_number'] = 0
 
@@ -3576,7 +3846,8 @@ class VOTableFile(Element, _IDProperty, _DescriptionProperty):
             'INFO': self._add_info,
             'DEFINITIONS': self._add_definitions,
             'DESCRIPTION': self._ignore_add,
-            'GROUP': self._add_group}
+            'GROUP': self._add_group,
+            'VODML': self._add_raw_annotations,}
 
         for start, tag, data, pos in iterator:
             if start:
@@ -3589,6 +3860,9 @@ class VOTableFile(Element, _IDProperty, _DescriptionProperty):
 
         if not len(self.resources) and config['version_1_2_or_later']:
             warn_or_raise(W53, W53, (), config, pos)
+
+        if self._raw_annotations:
+            self._raw_annotations.resolve_references(self)
 
         return self
 
