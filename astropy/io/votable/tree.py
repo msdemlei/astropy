@@ -473,32 +473,38 @@ class Annotation:
         """
         self._attributes[att_name] = item
 
-    def _get_resolved(self, ref, votable):
-        """returns the object ref references in votable and annotates it
-        with the current annotation.
-        """
-        dest = votable.get_element_by_id(ref.idref)
-        dest.add_annotation(self)
-        return dest
-
     def resolve_references(self, votable):
         """recursively satisfies _VODMLRefs and annotates the target
         elements.
+
+        This is complicated a bit because we want to annotate votable
+        items with all DMs they're in (e.g., a time column will have time and
+        positions annotations).  To ensure this, resolve_references
+        returns all annotated (VOTable) items, which will then also be
+        annotated in the calling resolve_references.
         """
+        to_annotate = []
         for name, vals in self._attributes.items():
             new_vals = []
             for val in vals:
                 if isinstance(val, _VODMLRef):
-                    new_vals.append(self._get_resolved(val, votable))
+                    vot_ob = votable.get_element_by_id(val.idref)
+                    new_vals.append(vot_ob)
+                    to_annotate.append(vot_ob)
 
                 elif isinstance(val, Annotation):
-                    val.resolve_references(votable)
+                    to_annotate.extend(val.resolve_references(votable))
                     new_vals.append(val)
 
                 else:
                     new_vals.append(val)
 
             self._attributes[name] = new_vals
+
+        for vob_ob in to_annotate:
+            vob_ob.add_annotation(self)
+
+        return to_annotate
 
 
 class _VODMLRef:

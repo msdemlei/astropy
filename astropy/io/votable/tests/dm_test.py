@@ -11,14 +11,17 @@ from astropy.io.votable.table import parse as votparse
 
 SAMPLE = votparse("data/vodml-timeseries.xml")
 
+
 def test_dataset():
     assert (SAMPLE.get_annotations("ds:Dataset")[0].dataProductType[0]
         == "TIMESERIES")
+
 
 def test_cube():
     assert (set(col.name for col in
             SAMPLE.get_annotations("ndcube:Cube")[0].dependent_axes)==
         {"phot", "flux"})
+
 
 def test_find_error():
     field_of_interest = SAMPLE.get_first_table(
@@ -30,6 +33,7 @@ def test_find_error():
 
     assert field_of_interest.get_annotations(
         "ivoa:Measurement")[0].statError[0].name, "flux_error"
+
 
 def test_get_target_position():
     target = SAMPLE.get_annotations("ds:Dataset")[0
@@ -51,16 +55,10 @@ def test_full_position():
     field_of_interest = SAMPLE.get_first_table(
         ).get_field_by_id_or_name("obs_time")
 
-    # Problem: now find the full stc2:Coords annotation(s) this belongs
-    # to.  This is currently ugly (essentially, we'd have to iterate
-    # though all stc2:Coords instances and see where obs_time is).
-    #
-    # What should be done: As you declare an annotation for an instance
-    # type, we should also declare annotations for types this is being
-    # used in.  But that's making a difference between referencing and
-    # embedding, which perhaps is lame.  Let's see what tomorrow brings.
-    assert False
-
+    coord = field_of_interest.get_annotations(
+        "stc2:Coords")[0]
+    assert abs(coord.space[0].longitude[0].value-315.018457397759)<1e-9
+    assert coord.time[0].frame[0].timescale[0] == "TCB"
     
 if __name__=="__main__":
     for name, obj in globals().copy().items():
