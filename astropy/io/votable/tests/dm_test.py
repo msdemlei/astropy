@@ -11,7 +11,6 @@ from astropy.io.votable.table import parse as votparse
 
 SAMPLE = votparse("data/vodml-timeseries.xml")
 
-
 def test_dataset():
     assert (SAMPLE.get_annotations("ds:Dataset")[0].dataProductType[0]
         == "TIMESERIES")
@@ -59,7 +58,8 @@ def test_full_position():
         "stc2:Coords")[0]
     assert abs(coord.space[0].longitude[0].value-315.018457397759)<1e-9
     assert coord.time[0].frame[0].timescale[0] == "TCB"
-    
+
+
 if __name__=="__main__":
     for name, obj in globals().copy().items():
         if name.startswith("test_"):

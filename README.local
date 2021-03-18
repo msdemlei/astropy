@@ -1,0 +1,5 @@
+Immer im virtualenv arbeiten: enable-vpython
+
+pytest muss auf setup.py develop vorbereitet werden:
+
+export PY_IGNORE_IMPORTMISMATCH=1
