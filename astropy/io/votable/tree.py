@@ -501,6 +501,11 @@ class Annotation:
 
             self._attributes[name] = new_vals
 
+        for vob_ob in to_annotate:
+            vob_ob.add_annotation(self)
+
+        return to_annotate
+
 
 class _VODMLRef:
     """An internal reference within the VOTable.
