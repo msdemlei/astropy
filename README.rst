@@ -31,11 +31,49 @@ demonstration-level code.  If you are in a virtual environment, simply
 running ``python setup.py install`` should do the trick.
 
 There is a sample document annotated with DMs that don't actually exist
-in an (overly) minimal annotation scheme in
+in an  minimal annotation scheme in
 ``astropy/io/votable/tests/data/vodml-timeseries.xml``.  Code exercising
 this a bit is in ``astropy/io/votable/tests/dm_test.py``.  As I couldn't
 be bothered figuring out some pytest confusion, you can just run this
 with normal python; if it runs without output, things haven't regressed.
+
+
+Annotation Syntax
+-----------------
+
+This prototype uses a stripped-down syntax for doing DM annotations,
+enough to extract the information from instance documents but
+abstracting the VO-DML details.  The assumption is that validators or
+other components will use the VO-DML model directly and will not need to
+recover it from the VOTable serialisation.
+
+There are n elements in the serialisation:
+
+* VODML -- the root element for all annotations.  There's just one of
+  these per VOTable.
+* INSTANCE -- an actual annotation, giving the VO-DML type the
+  annotation uses in dmtype.
+* ATTRIBUTE -- an attribute of an instance, giving the role name
+  (in dmrole) an either a ref (to the FIELD, PARAM, TABLE or RESOURCE
+  that fills the role), a value (and perhaps a dmtype) attribute for
+  literals, or an INSTANCE or a COLLECTION child.
+* COLLECTION -- A container for sequences as attribute values.  These
+  contain ITEMs or directly INSTANCEs (this shortcut is debatable).
+* ITEM -- as ATTRIBUTE, but without a dmrole attribute.  These are 
+  probably only make sense within COLLECTIONS for the time being.
+
+The mapping also contains a few legacy element that I'd probably drop
+(these are leftovers of the Shanghai-era bells-and-whistles mapping
+experiment):
+
+* MODEL, NAME, URL -- declares model metadata.  I believe we should
+  just use INSTANCEs to declare that, but it's a really minor matter.
+* TEMPLATES -- a parent element for instances that at this point doesn't
+  do anything useful; I'd probably drop it, too.
+* REFERENCE -- for references between DM elements; this might be useful
+  to have sequences always, but I think letting normal ATTRIBUTEs and
+  ITEMs reference DM elements would work just as well.
+
 
 
 API
@@ -56,11 +94,14 @@ FIELD, and PARAM):
   annoation object.
 
 An annotation is something you can fetch attributes from.  In the
-current implementation (``tree.py``), it will always return a list, but
-for unknown attributes that list will be empty.  See `Overly Minimal`_
-for a critique of this, also I suspect the “default is NULL” policy is
-something we should seriously consider for standard APIs in the interest
-of easy evolvability.
+current implementation (``tree.py``), you'll get an AttributeError for
+unknown attributes, otherwise:
+
+* a python literal (currently only a string) for @value-s
+* a FIELD or a PARAM (or TABLE or RESOURCE, potentially) when things
+  have been ref-ed.
+* another annotation for hierarchical annotations
+* or a list of the above in 0..n attributes.
 
 All annotations are available on the root VOTable.  This allows one to,
 for instance, enumerating all “positions” in a VOTable, but in
@@ -86,21 +127,13 @@ This is in a *ds:Dataset* annotation, which currently is global.
 Hence::
 
   vot.get_annotations("ds:Dataset"  # this returns a list of annotations
-    )[0].dataProductType[0]
+    )[0].dataProductType
 
 In the annotation::
 
-    <INSTANCE ID="ndhunnmsbstt" dmtype="ds:Dataset">
-        <ATTRIBUTE dmrole="dataProductType">
-          <LITERAL dmtype="ivoa:string">TIMESERIES</LITERAL>
-        </ATTRIBUTE>
-        <ATTRIBUTE dmrole="title">
-          <CONSTANT ref="title"/>
-        </ATTRIBUTE>
-        <ATTRIBUTE dmrole="curation">
-          <INSTANCE ID="ndhunnmsbtpa" dmtype="ds:Curation">
-            <ATTRIBUTE dmrole="calibLevel">
-              <LITERAL dmtype="ivoa:string">1</LITERAL>
+     <INSTANCE ID="ndwibspapwlt" dmtype="ds:Dataset">
+        <ATTRIBUTE dmrole="dataProductType" dmtype="ivoa:string" value="TIMESERIES"/>
+        <ATTRIBUTE dmrole="title" ref="title"/>
   ...
 
 Hence, the value of this will be ``TIMESERIES`` (in gross violation of
@@ -113,15 +146,20 @@ Figure out what's smart to plot
 
 That's ndcube annotation::
 
-      <INSTANCE ID="ndhunnomdstt" dmtype="ndcube:Cube">
+      <INSTANCE ID="ndwibspodost" dmtype="ndcube:Cube">
         <ATTRIBUTE dmrole="independent_axes">
-          <COLUMN ref="obs_time"/>
+          <COLLECTION>
+            <ITEM ref="obs_time"/>
+          </COLLECTION>
         </ATTRIBUTE>
         <ATTRIBUTE dmrole="dependent_axes">
-          <COLUMN ref="phot"/>
-          <COLUMN ref="flux"/>
+          <COLLECTION>
+            <ITEM ref="phot"/>
+            <ITEM ref="flux"/>
+          </COLLECTION>
         </ATTRIBUTE>
       </INSTANCE>
+
 
 So, a client filling dialog boxes with suggestions for what to plot on the
 abscissa would say::
@@ -142,53 +180,38 @@ the proper annotation, then use you knowledge of the DM; while you're at
 it, also figure out for which epoch the position is given)::
 
   stc_ann = col.get_annotations("stc2:Coords")[0]
-  ref_frame = stc_ann.space[0].frame[0].orientation[0]
-  for_epoch = stc_ann.time[0].location
+  ref_frame = stc_ann.space.frame.orientation
+  for_epoch = stc_ann.time.location
 
 This is based on this annotation::
 
-      <INSTANCE ID="ndhunnmsbset" dmtype="stc2:Coords">
+      <INSTANCE ID="ndwibspapabt" dmtype="stc2:Coords">
         <ATTRIBUTE dmrole="time">
-          <INSTANCE ID="ndhunnmsbhba" dmtype="stc2:TimeCoordinate">
+          <INSTANCE ID="ndwibspapint" dmtype="stc2:TimeCoordinate">
             <ATTRIBUTE dmrole="frame">
-              <INSTANCE ID="ndhunnmsbmmt" dmtype="stc2:TimeFrame">
-                <ATTRIBUTE dmrole="timescale">
-                  <LITERAL dmtype="ivoa:string">TCB</LITERAL>
-                </ATTRIBUTE>
-                <ATTRIBUTE dmrole="refPosition">
-                  <LITERAL dmtype="ivoa:string">BARYCENTER</LITERAL>
-                </ATTRIBUTE>
-                <ATTRIBUTE dmrole="time0">
-                  <LITERAL dmtype="ivoa:string">0</LITERAL>
-                </ATTRIBUTE>
+              <INSTANCE ID="ndwibspapigt" dmtype="stc2:TimeFrame">
+                <ATTRIBUTE dmrole="timescale" dmtype="ivoa:string" value="TCB"/>
+                <ATTRIBUTE dmrole="refPosition" dmtype="ivoa:string" value="BARYCENTER"/>
+                <ATTRIBUTE dmrole="time0" dmtype="ivoa:string" value="0"/>
               </INSTANCE>
             </ATTRIBUTE>
-            <ATTRIBUTE dmrole="location">
-              <COLUMN ref="obs_time"/>
-            </ATTRIBUTE>
+            <ATTRIBUTE dmrole="location" ref="obs_time"/>
           </INSTANCE>
         </ATTRIBUTE>
         <ATTRIBUTE dmrole="space">
-          <INSTANCE ID="ndhunnmsbaut" dmtype="stc2:SphericalCoordinate">
+          <INSTANCE ID="ndwibspapiba" dmtype="stc2:SphericalCoordinate">
             <ATTRIBUTE dmrole="frame">
-              <INSTANCE ID="ndhunnmnonut" dmtype="stc2:SpaceFrame">
-                <ATTRIBUTE dmrole="orientation">
-                  <LITERAL dmtype="ivoa:string">ICRS</LITERAL>
-                </ATTRIBUTE>
-                <ATTRIBUTE dmrole="epoch">
-                  <LITERAL dmtype="ivoa:string">J2015.5</LITERAL>
-                </ATTRIBUTE>
+              <INSTANCE ID="ndwibspapuna" dmtype="stc2:SpaceFrame">
+                <ATTRIBUTE dmrole="orientation" dmtype="ivoa:string" value="ICRS"/>
+                <ATTRIBUTE dmrole="epoch" dmtype="ivoa:string" value="J2015.5"/>
               </INSTANCE>
             </ATTRIBUTE>
-            <ATTRIBUTE dmrole="longitude">
-              <CONSTANT ref="ra"/>
-            </ATTRIBUTE>
-            <ATTRIBUTE dmrole="latitude">
-              <CONSTANT ref="dec"/>
-            </ATTRIBUTE>
+            <ATTRIBUTE dmrole="longitude" ref="ra"/>
+            <ATTRIBUTE dmrole="latitude" ref="dec"/>
           </INSTANCE>
         </ATTRIBUTE>
       </INSTANCE>
+
 
 
 Getting an error for a column
@@ -197,7 +220,7 @@ Getting an error for a column
 When a client wants to obtain a simple error estimate for a value in a
 column ``col``, they would say::
 
-  col.get_annotations("ivoa:Measurement")[0].value[0]
+  col.get_annotations("ivoa:Measurement")[0].statError
 
 – this gives a literal, a PARAM or a FIELD that contains the error
 estimate.  The annotation itself could have further information on
@@ -206,13 +229,10 @@ whether that's a 1-sigma or something else, depending on what
 
 The annotation used by this (where ``col`` is ``FIELD[@id="flux"]``)::
 
-      <INSTANCE ID="ndhunnomdolt" dmtype="ivoa:Measurement">
-        <ATTRIBUTE dmrole="value">
-          <COLUMN ref="flux"/>
-        </ATTRIBUTE>
-        <ATTRIBUTE dmrole="statError">
-          <COLUMN ref="flux_error"/>
-        </ATTRIBUTE>
+     <INSTANCE ID="ndwibspodmmt" dmtype="ivoa:Measurement">
+        <ATTRIBUTE dmrole="value" ref="flux"/>
+        <ATTRIBUTE dmrole="statError" ref="flux_error"/>
+      </INSTANCE>
 
 
 
@@ -226,22 +246,39 @@ annotation, this would mean that it just gives a bunch of columns; the
 client then inspects the the annotations of these columns until it finds
 one it likes.  First, the underlying annotation::
 
-    <INSTANCE ID="ndhunnmsbstt" dmtype="ds:Dataset">
-        ...
-        <ATTRIBUTE dmrole="target">
-          <INSTANCE ID="ndhunnmsbwha" dmtype="ds:AstroTarget">
-            <ATTRIBUTE dmrole="position">
-              <CONSTANT ref="ra"/>
-              <CONSTANT ref="dec"/>
-              <CONSTANT ref="ssa_location"/>
+      <INSTANCE ID="ndwibspapwlt" dmtype="ds:Dataset">
+        <ATTRIBUTE dmrole="dataProductType" dmtype="ivoa:string" value="TIMESERIES"/>
+        <ATTRIBUTE dmrole="title" ref="title"/>
+        <ATTRIBUTE dmrole="curation">
+          <INSTANCE ID="ndwibspapltt" dmtype="ds:Curation">
+            <ATTRIBUTE dmrole="calibLevel" dmtype="ivoa:string" value="1"/>
+            <ATTRIBUTE dmrole="publisher">
+              <INSTANCE ID="ndwibspappmt" dmtype="ds:Publisher">
+                <ATTRIBUTE dmrole="name" dmtype="ivoa:string" value="GAVO Data Center"/>
+                <ATTRIBUTE dmrole="publisherId" dmtype="ivoa:string" value="ivo://org.gavo.dc"/>
+              </INSTANCE>
             </ATTRIBUTE>
           </INSTANCE>
         </ATTRIBUTE>
+        <ATTRIBUTE dmrole="target">
+          <INSTANCE ID="ndwibspapldt" dmtype="ds:AstroTarget">
+            <ATTRIBUTE dmrole="position">
+              <COLLECTION>
+                <ITEM ref="ra"/>
+                <ITEM ref="dec"/>
+                <ITEM ref="ssa_location"/>
+              </COLLECTION>
+            </ATTRIBUTE>
+          </INSTANCE>
+        </ATTRIBUTE>
+      </INSTANCE>
+      ...
 
+ 
 This is what a client could do::
 
       target = SAMPLE.get_annotations("ds:Dataset")[0
-        ].target[0]
+        ].target
 
       for ann in target.position:
         # this iterates over the fields/params containing the target
@@ -275,28 +312,6 @@ annotations, say, *stc2:Coords* and a later *stc3:Coords*.  To implement
   if pos_ann is None:
     raise Exception("Don't understand any target annotation")
     
-
-
-
-
-Overly Minimal
---------------
-
-The current annotation scheme doesn't keep sequences and scalars apart,
-which probably makes this unnecessarily clumsy (though I mention in
-passing that this is essentially the metamodel of xpath, and thus we
-should at least briefly consider if it's as dumb as it might seem at
-first).
-
-It means that all attributes are list-valued, and if you're sure (e.g.,
-from the model) you have a scalar, just add a ``[0]``.  As I said, if
-I will iterate this, I will quite likely add COLLECTION to the XML
-syntax and have scalars and sequences in the annotation, too.
-
-On the other hand, I think I'd drop COLUMN and CONSTANT and just use
-@ref on ATTRIBUTE – what's on the other end of a reference is clear by
-VOTable, and there's no fundamental difference as to whether that's a
-PARAM or a FIELD.
 
 
 License

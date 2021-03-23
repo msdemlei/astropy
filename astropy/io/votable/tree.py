@@ -418,7 +418,7 @@ class _Annotatable:
         Note that the root VOTable has all annotations.
 
         This will return a (possibly empty) sequence of Annotation
-        object
+        objects.
         """
         if self._annotations is None:
             return []
@@ -441,11 +441,16 @@ class _Annotatable:
 class Annotation:
     """A representation of a VO-DML annotation.
 
-    Read DM attributes as attributes on these objects.  For now, everything is
-    list-valued.  If we actually have proper DMs one day, scalars will come
-    back as scalars, I guess; non-set attributes are empty lists (and
-    would probably return None or raise an AttributeError with proper
-    models).
+    Get DM attributes as attributes on these objects.
+
+    Trying to access a non-existing attribute is an AttributeError
+    regardless of what the actual DM says.
+
+    Otherwise, you'll get a Param or a Column if that's what was annotated,
+    a python literal (where there are literals in the annotation).
+    
+    This can also be another annotation (for hierarchial DMs) or a list (if 
+    the attribute is 0..n) if the DM allows that.
 
     Use add_annotation to set the attributes.  All annotations
     come with VO-DML types.
@@ -460,7 +465,10 @@ class Annotation:
         self._attributes = {}
 
     def __getattr__(self, att_name):
-        return self._attributes.get(att_name, [])
+        if att_name in self._attributes:
+            return self._attributes[att_name]
+        else:
+            raise AttributeError(f"'{att_name}' not set on {self}")
    
     def add_attribute(self, att_name, item):
         """add an annotation.
@@ -469,7 +477,7 @@ class Annotation:
         attribute manually, as this may later do some bookkeeping.
 
         item should be either another annotation, a string literal,
-        or an _Annotatable.
+        an _Annotatable, or a list of those.
         """
         self._attributes[att_name] = item
 
@@ -484,23 +492,29 @@ class Annotation:
         annotated in the calling resolve_references.
         """
         to_annotate = []
-        for name, vals in self._attributes.items():
-            new_vals = []
-            for val in vals:
-                if isinstance(val, _VODMLRef):
-                    vot_ob = votable.get_element_by_id(val.idref)
-                    new_vals.append(vot_ob)
-                    to_annotate.append(vot_ob)
+        
+        def do_resolve(item):
+            if isinstance(item, _VODMLRef):
+                 vot_ob = votable.get_element_by_id(item.idref)
+                 to_annotate.append(vot_ob)
+                 return vot_ob
 
-                elif isinstance(val, Annotation):
-                    to_annotate.extend(val.resolve_references(votable))
-                    new_vals.append(val)
+            elif isinstance(item, Annotation):
+                 to_annotate.extend(item.resolve_references(votable))
+                 return item
 
-                else:
-                    new_vals.append(val)
+            else:
+                return item
 
-            self._attributes[name] = new_vals
+        # resolve all references
+        for name, val in self._attributes.items():
+            if isinstance(val, list):
+                self._attributes[name] = [do_resolve(item)
+                    for item in val]
+            else:
+                self._attributes[name] = do_resolve(val)
 
+        # now add all annotations to the VOTable objects they annotate
         for vob_ob in to_annotate:
             vob_ob.add_annotation(self)
 
@@ -544,27 +558,56 @@ class _VODMLAnnotation:
             ann.resolve_references(votable)
             votable.add_annotation(ann)
 
-    def _parse_attribute(self, iterator, config, dmrole=None):
-        att_val = []
+    def _parse_collection(self, iterator, config):
+        items = []
 
         for start, tag, data, pos in iterator:
+            if start:
+                if tag=="ITEM":
+                    items.append(self._parse_attribute(
+                        iterator, config, **data))
+                elif tag=="INSTANCE":
+                    items.append(self._parse_instance(
+                        iterator, config, **data))
+                else:
+                    assert False, f"No {tag} expected here"
+            
+            else:
+                if tag=="COLLECTION":
+                    break
 
+        return items
+
+    def _parse_attribute(self, iterator, config, 
+            dmrole=None, ref=None, value=None, dmtype=None):
+        # TODO: raise errors when att_val is being overwritten
+        att_val = None
+
+        if value is not None:
+            # TODO: parse these based on dmtype
+            att_val = value
+
+        if ref is not None:
+            att_val = _VODMLRef(ref)
+
+        for start, tag, data, pos in iterator:
             if start:
                 if tag=="INSTANCE":
-                    att_val.append(
-                        self._parse_instance(iterator, config, **data))
-                elif tag=="COLUMN" :
-                    att_val.append(_VODMLRef(data["ref"]))
-                elif tag=="CONSTANT":
-                    att_val.append(_VODMLRef(data["ref"]))
+                    att_val = self._parse_instance(iterator, config, **data)
+                
+                elif tag=="COLLECTION":
+                    att_val = self._parse_collection(iterator, config)
+
+                else:
+                    assert False
 
             else:
-                if tag=="LITERAL":
-                    att_val.append(data)
-                elif tag=="ATTRIBUTE":
-                    assert att_val
+                if tag=="ATTRIBUTE" or tag=="ITEM":
+                    assert att_val, f"No attribute set: {dmrole}"
                     return att_val
-
+                
+                else:
+                    assert False, f"No {tag} expected here"
 
     def _parse_instance(self, iterator, config, ID=None, dmtype=None):
         cur_annotation = Annotation(id=ID, type=dmtype)
