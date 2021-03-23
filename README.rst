@@ -313,6 +313,54 @@ annotations, say, *stc2:Coords* and a later *stc3:Coords*.  To implement
     raise Exception("Don't understand any target annotation")
     
 
+Working with covariance
+'''''''''''''''''''''''
+
+An advanced example (and I'm quite sure we don't have a credible use
+case for that yet) is when you annotate covariances as in
+``astropy/io/votable/tests/data/covariance.xml``::
+
+      <INSTANCE dmtype="meas2:NaiveMeasurement">
+        <ATTRIBUTE dmrole="value" ref="pos_RA"/>
+        <ATTRIBUTE dmrole="error" ref="pos_RA_err"/>
+      </INSTANCE>
+
+      <INSTANCE dmtype="meas2:NaiveMeasurement">
+        <ATTRIBUTE dmrole="value" ref="pos_DEC"/>
+        <ATTRIBUTE dmrole="error" ref="pos_DEC_err"/>
+      </INSTANCE>
+
+      <INSTANCE dmtype="meas2:Correlation">
+      	<ATTRIBUTE dmrole="err1" ref="pos_RA_err"/>
+      	<ATTRIBUTE dmrole="err2" ref="pos_DEC_err"/>
+      	<ATTRIBUTE dmrole="corr_coeff" ref="pos_RADEC_corr"/>
+      </INSTANCE>
+
+One half-way credible use case of this would be to figure out all
+columns correlated with, say, the RA::
+
+    # find all columns that are correlated with pos_RA.
+    ra = COVSAMPLE.get_first_table().get_field_by_id_or_name("pos_RA")
+    
+    # get an error
+    err_col = ra.get_annotations("meas2:NaiveMeasurement")[0].error
+
+    # get all correlated errors and collect the (error) columns from
+    # their err1 and err2 attributes
+    correlated_errors = set()
+    for ann in err_col.get_annotations("meas2:Correlation"):
+        correlated_errors.add(ann.err1)
+        correlated_errors.add(ann.err2)
+    
+    # and now get the values from all NaiveMeasurements that the errors
+    # participate in
+    correlated_columns = set()
+    for other_err in correlated_errors:
+        for ann in other_err.get_annotations("meas2:NaiveMeasurement"):
+            correlated_columns.add(ann.value)
+    
+    corr_names = set(c.name for c in correlated_columns) 
+
 
 License
 -------

@@ -65,6 +65,34 @@ def test_full_position():
     assert coord.time.frame.timescale == "TCB"
 
 
+COVSAMPLE = votparse("data/covariance.xml")
+
+def test_get_correlated():
+    # find all columns that are correlated with pos_RA.
+    ra = COVSAMPLE.get_first_table().get_field_by_id_or_name("pos_RA")
+    
+    # get an error
+    err_col = ra.get_annotations("meas2:NaiveMeasurement")[0].error
+
+    # get all correlated errors and collect the (error) columns from
+    # their err1 and err2 attributes
+    correlated_errors = set()
+    for ann in err_col.get_annotations("meas2:Correlation"):
+        correlated_errors.add(ann.err1)
+        correlated_errors.add(ann.err2)
+    
+    # and now get the values from all NaiveMeasurements that the errors
+    # participate in
+    correlated_columns = set()
+    for other_err in correlated_errors:
+        for ann in other_err.get_annotations("meas2:NaiveMeasurement"):
+            correlated_columns.add(ann.value)
+    
+    corr_names = set(c.name for c in correlated_columns) 
+    assert corr_names == {'pos_RA', 'pos_DEC', 'pm_DEC', 
+        'RV', 'pm_RA', 'PARALLAX'}, corr_names
+
+
 if __name__=="__main__":
     for name, obj in globals().copy().items():
         if name.startswith("test_"):
